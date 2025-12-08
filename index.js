@@ -33,8 +33,21 @@ app.use(cors(corsOptions));
 //app.use(express.json());
 const upload = multer({ storage: multer.memoryStorage() });
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY); // Initialize Google Generative AI with API key
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro"}); // Use Gemini Pro model
+// Check if GEMINI_API_KEY is set
+if (!process.env.GEMINI_API_KEY) {
+  console.error('ERROR: GEMINI_API_KEY is not set in environment variables!');
+  console.error('Please set GEMINI_API_KEY in Railway environment variables.');
+}
+
+// Initialize only if API key is available
+let genAI = null;
+let model = null;
+if (process.env.GEMINI_API_KEY) {
+  genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY); // Initialize Google Generative AI with API key
+  // Use gemini-1.5-flash for free tier (faster and has better free tier limits)
+  // If you have paid tier, you can use "gemini-1.5-pro" or "gemini-2.0-flash-exp"
+  model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // Use Gemini Flash model (free tier friendly)
+}
 
 
 function fileToGenerativePart(buffer, mimeType) {
@@ -49,6 +62,13 @@ function fileToGenerativePart(buffer, mimeType) {
 
 app.post('/api/chat', upload.single('image'),  async (req, res) => {
     try {
+        // Check if API key is set and model is initialized
+        if (!process.env.GEMINI_API_KEY || !model) {
+            return res.status(500).json({ 
+                error: 'GEMINI_API_KEY is not configured. Please set it in Railway environment variables.' 
+            });
+        }
+
         const userMessage = req.body.message; // Access the user's message
         const imageFile = req.file; // Access the uploaded image file
 
@@ -95,7 +115,24 @@ app.post('/api/chat', upload.single('image'),  async (req, res) => {
 
     } catch (error) {
       console.error("Error processing request:", error);
-        res.status(500).json({ error: 'An error occurred while processing your request.' });
+      
+      // Provide more helpful error messages
+      if (error.message && error.message.includes('API_KEY')) {
+        return res.status(500).json({ 
+          error: 'Invalid or missing Gemini API key. Please check Railway environment variables.' 
+        });
+      }
+      
+      if (error.message && error.message.includes('quota') || error.message && error.message.includes('429')) {
+        return res.status(429).json({ 
+          error: 'API quota exceeded. Please wait a moment and try again, or check your Gemini API quota limits.' 
+        });
+      }
+      
+      res.status(500).json({ 
+        error: 'An error occurred while processing your request.',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
     }   
 });
 
