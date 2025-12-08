@@ -29,8 +29,10 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
+// Parse JSON request bodies
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-//app.use(express.json());
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Check if GEMINI_API_KEY is set
@@ -43,11 +45,17 @@ if (!process.env.GEMINI_API_KEY) {
 let genAI = null;
 let model = null;
 if (process.env.GEMINI_API_KEY) {
-  genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY); // Initialize Google Generative AI with API key
-  // Try gemini-1.5-pro first (free tier friendly)
-  // If quota exceeded, you can try: "gemini-2.5-pro" (may have costs)
-  // Fallback options: "gemini-1.5-flash" or "gemini-2.0-flash-exp"
-  model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); // Use Gemini 1.5 Pro model
+  try {
+    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY); // Initialize Google Generative AI with API key
+    // Use gemini-pro (stable, widely available, free tier friendly)
+    // Alternative if needed: "gemini-2.5-pro" (may have quota limits)
+    model = genAI.getGenerativeModel({ model: "gemini-pro" }); // Use Gemini Pro model
+    console.log('✅ Gemini AI model initialized successfully: gemini-pro');
+  } catch (error) {
+    console.error('❌ Error initializing Gemini AI:', error.message);
+  }
+} else {
+  console.error('⚠️ GEMINI_API_KEY is not set!');
 }
 
 
@@ -116,17 +124,26 @@ app.post('/api/chat', upload.single('image'),  async (req, res) => {
 
     } catch (error) {
       console.error("Error processing request:", error);
+      console.error("Error stack:", error.stack);
+      console.error("Error message:", error.message);
       
       // Provide more helpful error messages
-      if (error.message && error.message.includes('API_KEY')) {
+      if (error.message && (error.message.includes('API_KEY') || error.message.includes('API key'))) {
         return res.status(500).json({ 
           error: 'Invalid or missing Gemini API key. Please check Railway environment variables.' 
         });
       }
       
-      if (error.message && error.message.includes('quota') || error.message && error.message.includes('429')) {
+      if (error.message && (error.message.includes('quota') || error.message.includes('429') || error.message.includes('Quota'))) {
         return res.status(429).json({ 
           error: 'API quota exceeded. Please wait a moment and try again, or check your Gemini API quota limits.' 
+        });
+      }
+      
+      if (error.message && (error.message.includes('404') || error.message.includes('not found'))) {
+        return res.status(500).json({ 
+          error: 'Model not found. The model name may be incorrect. Please check the model configuration.',
+          details: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
       }
       
@@ -137,9 +154,20 @@ app.post('/api/chat', upload.single('image'),  async (req, res) => {
     }   
 });
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    hasApiKey: !!process.env.GEMINI_API_KEY,
+    hasModel: !!model,
+    timestamp: new Date().toISOString()
+  });
+});
 
 // Start the server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`🚀 Chat Service is running on port ${PORT}`);
+    console.log(`📝 GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? '✅ Set' : '❌ Not set'}`);
+    console.log(`🤖 Model initialized: ${model ? '✅ Yes' : '❌ No'}`);
 });
