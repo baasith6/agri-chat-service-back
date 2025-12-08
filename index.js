@@ -44,9 +44,10 @@ let genAI = null;
 let model = null;
 if (process.env.GEMINI_API_KEY) {
   genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY); // Initialize Google Generative AI with API key
-  // Use gemini-pro for free tier (stable and widely available)
-  // Alternative models if you have paid tier: "gemini-1.5-pro" or "gemini-2.0-flash-exp"
-  model = genAI.getGenerativeModel({ model: "gemini-pro" }); // Use Gemini Pro model (free tier friendly)
+  // Try gemini-1.5-pro first (free tier friendly)
+  // If quota exceeded, you can try: "gemini-2.5-pro" (may have costs)
+  // Fallback options: "gemini-1.5-flash" or "gemini-2.0-flash-exp"
+  model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); // Use Gemini 1.5 Pro model
 }
 
 
