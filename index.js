@@ -1,173 +1,129 @@
+// Load environment variables
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config(); // Load environment variables from .env file
-const { GoogleGenerativeAI } = require('@google/generative-ai'); // Import the Google Generative AI SDK
 const multer = require('multer');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-
-// Initialize Express app
+// --------------------------
+// Express App Setup
+// --------------------------
 const app = express();
-
-// CORS Configuration
-const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    
-    const allowedOrigin = process.env.CORS_ORIGIN || 'http://localhost:4200';
-    const allowedOrigins = [allowedOrigin, 'http://localhost:4200', 'http://localhost:5173'];
-    
-    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV !== 'production') {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-};
-
-app.use(cors(corsOptions));
-
-// Parse JSON request bodies
+app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
+// Multer (Store images in memory)
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Check if GEMINI_API_KEY is set
-if (!process.env.GEMINI_API_KEY) {
-  console.error('ERROR: GEMINI_API_KEY is not set in environment variables!');
-  console.error('Please set GEMINI_API_KEY in Railway environment variables.');
+// --------------------------
+// Gemini AI Configuration
+// --------------------------
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+if (!GEMINI_API_KEY) {
+  console.error("❌ Error: .env கோப்பில் GEMINI_API_KEY இல்லை!");
+  process.exit(1);
 }
 
-// Initialize only if API key is available
-let genAI = null;
-let model = null;
-if (process.env.GEMINI_API_KEY) {
-  try {
-    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY); // Initialize Google Generative AI with API key
-    // Use gemini-pro (stable, widely available, free tier friendly)
-    // Alternative if needed: "gemini-2.5-pro" (may have quota limits)
-    model = genAI.getGenerativeModel({ model: "gemini-pro" }); // Use Gemini Pro model
-    console.log('✅ Gemini AI model initialized successfully: gemini-pro');
-  } catch (error) {
-    console.error('❌ Error initializing Gemini AI:', error.message);
-  }
-} else {
-  console.error('⚠️ GEMINI_API_KEY is not set!');
-}
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
+// Choose Model (You said 2.5 flash)
+const model = genAI.getGenerativeModel({
+  model: "gemini-2.5-flash"
+});
 
+// Convert Image → Base64 Part
 function fileToGenerativePart(buffer, mimeType) {
   return {
     inlineData: {
       data: buffer.toString("base64"),
       mimeType
-    },
+    }
   };
 }
 
+// --------------------------
+// Chat Endpoint
+// --------------------------
+app.post('/api/chat', upload.single('image'), async (req, res) => {
+  try {
+    const userMessage = req.body.message || "";
+    const imageFile = req.file;
 
-app.post('/api/chat', upload.single('image'),  async (req, res) => {
-    try {
-        // Check if API key is set and model is initialized
-        if (!process.env.GEMINI_API_KEY || !model) {
-            return res.status(500).json({ 
-                error: 'GEMINI_API_KEY is not configured. Please set it in Railway environment variables.' 
-            });
-        }
+    console.log(`📥 Request → Text: "${userMessage}" | Image: ${imageFile ? 'Yes' : 'No'}`);
 
-        const userMessage = req.body.message; // Access the user's message
-        const imageFile = req.file; // Access the uploaded image file
+    if (!userMessage && !imageFile) {
+      return res.status(400).json({ error: "Message or Image is required" });
+    }
 
-        if (!userMessage) {
-            return res.status(400).json({ error: 'Message is required' });
-        }
+    let parts = [];
+    let promptText = "";
 
-        let prompt;
-        
-        // If an image file is uploaded, use it in the prompt
-        if (imageFile) {
-          prompt = `
-            You are an expert agricultural assistant for farmers. Your name is "விவசாய நண்பன்".
-            Analyze the attached image. Identify what is in the image (e.g., a plant, a leaf, a pest). 
-            If you see signs of a plant disease or pest, identify it and provide a SHORT, clear, and simple solution in TAMIL language.
-            Your response should be easy for a farmer to understand. Use bullet points or numbered lists if necessary.
-            IMPORTANT: Do NOT talk about the filename or file type (like .webp). Focus ONLY on the visual content relevant to a farmer.
-            The user's original message is: "${userMessage}"
-          `;
+    // --------------------------
+    // If message contains Image
+    // --------------------------
+    if (imageFile) {
+      promptText = `
+நீங்கள் ஒரு நிபுணர் விவசாய உதவியாளர் "விவசாய நண்பன்". 
+பயனர் அனுப்பிய படத்தை முழுமையாக பகுப்பாய்வு செய்யுங்கள். 
+அந்த படத்தில் இருக்கும் செடி / பூச்சி / நோய் / சேதம் எது என்பதை கண்டறிக.
+படத்தில் இருக்கும் பிரச்சனை இருந்தால் மிக தெளிவாக, ஆனால் குறைந்த வார்த்தைகளில் தமிழில் பதில் கொடுங்கள்.
 
-        } else {
-          prompt = `
-              You are a helpful agricultural assistant for farmers named "விவசாய நண்பன்". 
-              Answer the following question clearly and concisely in TAMIL language.
-              The user's question is: "${userMessage}"
-          `;
-        }
+⚠ முக்கியம்:
+- பயனர் படம் upload செய்ததை மட்டும் கவனியுங்கள்.
+- Image filename, resolution, upload details போன்றவற்றை பேசக்கூடாது.
+- VERY SHORT & CLEAR answer.
 
-        const contents = [prompt];
+பயனர் கேள்வி: "${userMessage || 'இந்த படம் பற்றி சொல்லுங்கள்'}"
+      `;
 
-        // If an image file is provided, convert it to a generative part
-        if (imageFile) {
-          const imagePart = fileToGenerativePart(imageFile.buffer, imageFile.mimetype);
-          contents.push(imagePart);
-        }
+      parts.push(promptText);
+      parts.push(fileToGenerativePart(imageFile.buffer, imageFile.mimetype));
+    }
 
-        // Generate response from Gemini Pro model
-        const result = await model.generateContent(contents);
-        const response = await result.response;
-        const aiResponse = response.text();
+    // --------------------------
+    // If only text question
+    // --------------------------
+    else {
+      promptText = `
+நீங்கள் ஒரு பயனருக்கு உதவும் விவசாய உதவியாளர் "விவசாய நண்பன்".
+பின்வரும் கேள்விக்கு எளிமையாகவும் தெளிவாகவும் தமிழில் பதில் கொடுங்கள்.
 
-        // Send the AI response back to the client
-        res.json({ reply: aiResponse });
+பயனர் கேள்வி: "${userMessage}"
+      `;
+      parts.push(promptText);
+    }
 
-    } catch (error) {
-      console.error("Error processing request:", error);
-      console.error("Error stack:", error.stack);
-      console.error("Error message:", error.message);
-      
-      // Provide more helpful error messages
-      if (error.message && (error.message.includes('API_KEY') || error.message.includes('API key'))) {
-        return res.status(500).json({ 
-          error: 'Invalid or missing Gemini API key. Please check Railway environment variables.' 
-        });
-      }
-      
-      if (error.message && (error.message.includes('quota') || error.message.includes('429') || error.message.includes('Quota'))) {
-        return res.status(429).json({ 
-          error: 'API quota exceeded. Please wait a moment and try again, or check your Gemini API quota limits.' 
-        });
-      }
-      
-      if (error.message && (error.message.includes('404') || error.message.includes('not found'))) {
-        return res.status(500).json({ 
-          error: 'Model not found. The model name may be incorrect. Please check the model configuration.',
-          details: process.env.NODE_ENV === 'development' ? error.message : undefined
-        });
-      }
-      
-      res.status(500).json({ 
-        error: 'An error occurred while processing your request.',
-        details: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }   
+    // --------------------------
+    // Call Gemini
+    // --------------------------
+    const result = await model.generateContent(parts);
+
+    // Safe response extraction (avoids undefined errors)
+    let aiResponse = "";
+    if (result?.response?.text) {
+      aiResponse = result.response.text();
+    } else {
+      aiResponse = "மன்னிக்கவும், தற்போதைய கோரிக்கையை செயலாக்க முடியவில்லை.";
+    }
+
+    console.log("✅ Gemini Response Returned");
+
+    return res.json({ reply: aiResponse });
+
+  } catch (error) {
+    console.error("❌ Server Error:", error?.message);
+    return res.status(500).json({
+      error: "Internal Server Error — please try again."
+    });
+  }
 });
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    hasApiKey: !!process.env.GEMINI_API_KEY,
-    hasModel: !!model,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Start the server
+// --------------------------
+// Start Server
+// --------------------------
 const PORT = process.env.PORT || 3001;
+
 app.listen(PORT, () => {
-    console.log(`🚀 Chat Service is running on port ${PORT}`);
-    console.log(`📝 GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? '✅ Set' : '❌ Not set'}`);
-    console.log(`🤖 Model initialized: ${model ? '✅ Yes' : '❌ No'}`);
+  console.log(`🤖 Chatbot Server Running → http://localhost:${PORT}`);
 });
